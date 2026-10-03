@@ -165,7 +165,7 @@ function Loading({ progress, error, gemini }: { progress: number; error?: string
   const downloading = progress < 100;
   if (!downloading) {
     return (
-      <View style={[styles.card, { flexDirection: 'column', gap: 4 }]}>
+      <View style={{ alignItems: 'center', gap: 4 }}>
         <View style={{ width: WAKE_WIDTH, height: WAKE_HEIGHT }}>
           <CircularStatusBarIphoneDuo size={WAKE_WIDTH} color={colors.accent} showWifi={false} accessibilityLabel="Waking up" />
           <View style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center' }]} pointerEvents="none">
