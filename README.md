@@ -23,12 +23,11 @@ Your voice and transcripts never leave the device.*
 
 ## Demo
 
-<!-- TODO: replace with real assets before launch -->
 <div align="center">
 
-| Onboarding | Call screen | Demo video |
-|:---:|:---:|:---:|
-| `docs/screens/onboarding.png` | `docs/screens/call.png` | `docs/demo.gif` |
+| Ready to Call | In-Call Waveform | Companion Persona Setup | Brain / Engine Selector |
+|:---:|:---:|:---:|:---:|
+| <img src="./docs/screens/call-ready.jpg" width="200" alt="Call Ready screen" /> | <img src="./docs/screens/calling-connected.jpg" width="200" alt="In-Call Waveform screen" /> | <img src="./docs/screens/persona-config.jpg" width="200" alt="Companion Persona Setup" /> | <img src="./docs/screens/brain-selector.jpg" width="200" alt="Brain Engine Selector" /> |
 
 </div>
 
