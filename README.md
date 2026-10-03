@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="./assets/images/logo.png" width="128" height="128" alt="Hum logo" />
+<img src="./assets/images/hum-infinity-logo.png" width="140" height="140" alt="Hum logo" />
 
 # Hum
 
