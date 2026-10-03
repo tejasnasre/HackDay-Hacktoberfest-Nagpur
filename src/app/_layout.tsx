@@ -16,6 +16,7 @@ export default function RootLayout() {
           <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }}>
             <Stack.Screen name="index" />
             <Stack.Screen name="onboarding" options={{ gestureEnabled: false }} />
+            <Stack.Screen name="settings" />
           </Stack>
         </VoiceProvider>
       </ThemeProvider>

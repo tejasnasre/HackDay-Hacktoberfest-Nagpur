@@ -1,64 +1,81 @@
-import { BlurMask, Canvas, Circle, RadialGradient, vec } from '@shopify/react-native-skia';
-import { useEffect } from 'react';
-import {
-  Easing,
-  useAnimatedReaction,
-  useDerivedValue,
-  useSharedValue,
-  withRepeat,
-  withTiming,
-  type SharedValue,
-} from 'react-native-reanimated';
+import { useState } from 'react';
+import { useAnimatedReaction, type SharedValue } from 'react-native-reanimated';
+import { scheduleOnRN } from 'react-native-worklets';
 
+import { SiriIOS27 } from '@/shared/components/siri-ios-27';
 import type { LoopState } from '@/voice/useVoiceLoop';
 
-const PALETTE: Record<LoopState, [string, string, string]> = {
-  off: ['#3A3350', '#221D33', '#0B0910'],
-  starting: ['#8E7CFF', '#4B3BB8', '#0B0910'],
-  listening: ['#FF9FC6', '#B04A86', '#0B0910'],
-  thinking: ['#B9A8FF', '#5D47D6', '#0B0910'],
-  speaking: ['#FFC9A3', '#E0607E', '#0B0910'],
+type Look = {
+  /** Strand colors for the Siri waves; 'palette' means the companion's own colours. */
+  colors: readonly string[] | 'palette';
+  /** Resting wave energy, and how much voice loudness adds on top. */
+  rest: number;
+  gain: number;
+  speed: number;
+  strandCount: number;
 };
+
+const LOOKS: Record<LoopState, Look> = {
+  // Greys and white while idle or when the user talks; colour only when the companion speaks.
+  off: { colors: ['#5A5A5A', '#333333', '#7A7A7A'], rest: 0.05, gain: 0, speed: 0.35, strandCount: 3 },
+  starting: { colors: ['#FFFFFF', '#9A9A9A', '#CFCFCF'], rest: 0.3, gain: 0, speed: 1, strandCount: 4 },
+  listening: { colors: ['#FFFFFF', '#D9D9D9', '#A6A6A6', '#F2F2F2'], rest: 0.15, gain: 0.85, speed: 1.1, strandCount: 5 },
+  thinking: { colors: ['#E6E6E6', '#8C8C8C', '#BFBFBF', '#FFFFFF'], rest: 0.4, gain: 0, speed: 2.2, strandCount: 4 },
+  speaking: {
+    colors: 'palette',
+    rest: 0.2,
+    gain: 0.8,
+    speed: 1.3,
+    strandCount: 6,
+  },
+};
+
+// Loudness is snapped to this step, so tiny changes do not re-render.
+const LEVEL_STEP = 0.05;
+
+// Taller, thicker strands than the component's defaults: the orb is the whole screen.
+const AMPLITUDE = 1.7;
+const THICKNESS = 1.3;
 
 type Props = {
   size: number;
+  /** The companion's colours, used while they speak. */
+  palette: readonly string[];
   state: LoopState;
   micLevel: SharedValue<number>;
   outLevel: SharedValue<number>;
 };
 
-export function Orb({ size, state, micLevel, outLevel }: Props) {
-  const c = size / 2;
-  const base = size * 0.3;
-  const breath = useSharedValue(0);
-  const level = useSharedValue(0);
+/** Hum's face: Siri-style voice strands that follow whoever is talking. */
+export function Orb({ size, palette, state, micLevel, outLevel }: Props) {
+  const look = LOOKS[state];
+  const [voice, setVoice] = useState(0);
 
-  useEffect(() => {
-    const period = state === 'thinking' ? 700 : state === 'off' ? 3200 : 2000;
-    breath.value = 0;
-    breath.value = withRepeat(withTiming(1, { duration: period, easing: Easing.inOut(Easing.sin) }), -1, true);
-  }, [breath, state]);
-
+  // SiriIOS27 takes a plain number, so bring loudness over from the UI thread,
+  // only when the snapped value changes.
   useAnimatedReaction(
-    () => (state === 'listening' ? micLevel.value : state === 'speaking' ? outLevel.value : 0),
-    (target) => {
-      level.value = withTiming(target, { duration: 140 });
+    () => {
+      const raw = state === 'listening' ? micLevel.value : state === 'speaking' ? outLevel.value : 0;
+      return Math.round(raw / LEVEL_STEP) * LEVEL_STEP;
+    },
+    (now, prev) => {
+      if (now !== prev) scheduleOnRN(setVoice, now);
     },
     [state],
   );
 
-  const r = useDerivedValue(() => base * (1 + 0.06 * breath.value + 0.35 * level.value));
-  const glowR = useDerivedValue(() => r.value * 1.35);
-  const [inner, mid, outer] = PALETTE[state];
+  const level = Math.min(1, look.rest + look.gain * voice);
 
   return (
-    <Canvas style={{ width: size, height: size }}>
-      <Circle cx={c} cy={c} r={glowR} color={mid} opacity={0.35}>
-        <BlurMask blur={size * 0.08} style="normal" />
-      </Circle>
-      <Circle cx={c} cy={c} r={r}>
-        <RadialGradient c={vec(c * 0.85, c * 0.8)} r={base * 1.6} colors={[inner, mid, outer]} />
-      </Circle>
-    </Canvas>
+    <SiriIOS27
+      width={size}
+      height={size}
+      level={level}
+      colors={look.colors === 'palette' ? palette : look.colors}
+      speed={look.speed}
+      amplitude={AMPLITUDE}
+      thickness={THICKNESS}
+      strandCount={look.strandCount}
+    />
   );
 }

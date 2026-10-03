@@ -2,15 +2,25 @@ import { getRandomBytes } from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
 import { createMMKV, type MMKV } from 'react-native-mmkv';
 
-import type { PersonaId, VoiceStyle } from './persona';
+import type { Language, PersonaId, VoiceStyle } from './persona';
 
 export type Fact = { key: string; value: string; at: number };
 export type MoodEntry = { mood: string; intensity: number; note?: string; at: number };
 
+/** Where Hum's brain runs: Gemma on this phone, or Gemini with the user's API key. */
+export type BrainEngine = 'device' | 'gemini';
+
 export type HumData = {
   persona?: PersonaId;
+  engine: BrainEngine;
+  /** Language the user speaks and Hum answers in. */
+  language: Language;
+  /** What the companion calls the user. */
+  userName?: string;
+  /** The user's own words on how the companion should be, added to the prompt. */
+  customPrompt?: string;
   voiceStyle: VoiceStyle;
-  /** User consented to the ~3 GB model download. */
+  /** User consented to the model download (~3 GB on device, ~0.5 GB with Gemini). */
   modelsAccepted: boolean;
   /** User opted in to keeping memories between conversations. */
   rememberEnabled: boolean;
@@ -22,6 +32,8 @@ const MAX_FACTS = 60;
 const MAX_MOODS = 400;
 
 const DEFAULT_DATA: HumData = {
+  engine: 'device',
+  language: 'en',
   voiceStyle: 'warm',
   modelsAccepted: false,
   rememberEnabled: true,
@@ -31,7 +43,7 @@ const DEFAULT_DATA: HumData = {
 
 const STORE_ID = 'hum';
 const KEY_ALIAS = 'hum.mmkv.key';
-const DATA_KEYS = Object.keys(DEFAULT_DATA).concat('persona') as (keyof HumData)[];
+const DATA_KEYS = Object.keys(DEFAULT_DATA).concat('persona', 'userName', 'customPrompt') as (keyof HumData)[];
 
 let data: HumData = DEFAULT_DATA;
 let storage: MMKV | undefined;

@@ -5,6 +5,7 @@ const expoConfig = require("eslint-config-expo/flat");
 module.exports = defineConfig([
   expoConfig,
   {
-    ignores: ["dist/*", "example/*"],
+    // src/shared holds components copied in from reacticx; keep them as shipped.
+    ignores: ["dist/*", "example/*", "src/shared/*"],
   }
 ]);

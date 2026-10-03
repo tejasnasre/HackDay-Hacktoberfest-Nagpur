@@ -1,5 +1,6 @@
 import * as Haptics from 'expo-haptics';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Platform } from 'react-native';
 import { useSharedValue } from 'react-native-reanimated';
 import {
   useSpeechToText,
@@ -9,11 +10,11 @@ import {
 } from 'react-native-executorch';
 
 import { forgetEverything, getMemory, memoryForPrompt } from './memoryStore';
-import { LLM_MODEL, STT_MODEL, TTS_MODEL, VAD_MODEL } from './modelConfig';
-import { PERSONAS, buildSystemPrompt, type PersonaId } from './persona';
+import { LLM_MODEL, STT_MODELS, TTS_MODELS, VAD_MODEL } from './modelConfig';
+import { PERSONAS, buildSystemPrompt, type Language, type PersonaId } from './persona';
 import { createSentenceChunker } from './sentenceChunker';
 import { HUM_SKILLS, callSignals } from './skills';
-import { KV_COMPACT_RATIO, useBrain } from './useBrain';
+import { KV_COMPACT_RATIO, useBrain, type CloudBrain } from './useBrain';
 import { MIC_SAMPLE_RATE, ensureMicPermission, useMic } from './useMic';
 import { usePlayer } from './usePlayer';
 
@@ -33,14 +34,27 @@ const LISTEN_VAD: VadStreamOptions = { minSilenceDurationMs: 650 };
 const BARGE_IN_VAD: VadStreamOptions = { speechThreshold: 0.75, minSpeechDurationMs: 280 };
 // Audio kept from before a barge-in is detected, so the first words are not lost.
 const PREROLL_SAMPLES = MIC_SAMPLE_RATE * 0.8;
-
-const GREETINGS = ["Hey. I'm here.", "Hi you. I'm listening.", 'Hey, how was your day?'];
+// Only iOS (voiceChat mode) cancels Hum's own voice from the mic. Elsewhere the
+// mic hears Hum through the speaker, so voice barge-in would cut Hum off and
+// feed its own words back as the user's; interrupting is tap-only there.
+export const VOICE_BARGE_IN = Platform.OS === 'ios';
+// Speaker output lags the audio clock a little; ignore the mic this long after
+// Hum stops so its last words are not heard as the user's.
+const ECHO_TAIL_MS = 400;
 
 // Weighted by approximate download size (GB).
 const WEIGHTS = { llm: 2.6, stt: 0.15, tts: 0.33, vad: 0.002 };
 
-export function useVoiceLoop(opts: { persona: PersonaId | undefined; enabled: boolean }) {
-  const { persona: personaId, enabled } = opts;
+export function useVoiceLoop(opts: {
+  persona: PersonaId | undefined;
+  enabled: boolean;
+  /** Set to answer with Gemini (the user's API key) instead of on-device Gemma. */
+  cloud: CloudBrain | undefined;
+  language: Language;
+  userName: string | undefined;
+  customPrompt: string | undefined;
+}) {
+  const { persona: personaId, enabled, cloud, language, userName, customPrompt } = opts;
 
   const [state, setState] = useState<LoopState>('off');
   const [lastStats, setLastStats] = useState<TurnStats | undefined>();
@@ -59,22 +73,33 @@ export function useVoiceLoop(opts: { persona: PersonaId | undefined; enabled: bo
   const llmBusy = useRef<Promise<unknown>>(Promise.resolve());
   const preroll = useRef<Float32Array[]>([]);
   const prerollLen = useRef(0);
+  const micMutedUntil = useRef(0);
 
-  const stt = useSpeechToText(STT_MODEL, { preventLoad: !enabled });
-  const tts = useTextToSpeech(TTS_MODEL, { preventLoad: !enabled });
-  const vad = useVoiceActivityDetector(VAD_MODEL, { preventLoad: !enabled });
+  const brain = useBrain(LLM_MODEL, enabled, HUM_SKILLS, cloud);
+
+  // Load the LLM alone first: loading every model at once peaks above what the
+  // OS allows and the app gets killed. Latched so a later session rebuild
+  // (compaction, persona change) does not unload the voice models.
+  const [brainLoaded, setBrainLoaded] = useState(false);
+  if (brain.isReady && !brainLoaded) setBrainLoaded(true);
+  const voiceEnabled = enabled && brainLoaded;
+
+  const stt = useSpeechToText(STT_MODELS[language], { preventLoad: !voiceEnabled });
+  const tts = useTextToSpeech(TTS_MODELS[language], { preventLoad: !voiceEnabled });
+  const vad = useVoiceActivityDetector(VAD_MODEL, { preventLoad: !voiceEnabled });
   const { synthesizeStop } = tts;
   const { streamStop } = stt;
-
-  const brain = useBrain(LLM_MODEL, enabled, HUM_SKILLS);
   const { stop: stopGeneration } = brain;
   const player = usePlayer();
   const stopRef = useRef<() => Promise<void>>(async () => {});
 
   const persona = personaId ? PERSONAS[personaId] : undefined;
-  const systemPrompt = useCallback(() => (persona ? buildSystemPrompt(persona, memoryForPrompt()) : ''), [persona]);
+  const systemPrompt = useCallback(
+    () => (persona ? buildSystemPrompt(persona, { language, userName, customPrompt, memory: memoryForPrompt() }) : ''),
+    [persona, language, userName, customPrompt],
+  );
 
-  // Rebuild the conversation whenever the session or persona changes.
+  // Rebuild the conversation whenever the session, persona or profile changes.
   const sessionPersona = useRef<PersonaId | undefined>(undefined);
   useEffect(() => {
     if (!brain.isDownloaded || !persona) return;
@@ -82,19 +107,26 @@ export function useVoiceLoop(opts: { persona: PersonaId | undefined; enabled: bo
     void brain.reset(systemPrompt());
     // `brain.reset` changes identity with the downloaded resource.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [brain.isDownloaded, brain.reset, persona?.id]);
+  }, [brain.isDownloaded, brain.reset, persona?.id, language, userName, customPrompt]);
 
   const isReady = stt.isReady && tts.isReady && vad.isReady && brain.isReady;
+  useEffect(() => {
+    if (__DEV__ && voiceEnabled) {
+      console.log('[hum] voice models', { stt: stt.isReady, tts: tts.isReady, vad: vad.isReady });
+    }
+  }, [voiceEnabled, stt.isReady, tts.isReady, vad.isReady]);
   const downloadProgress = useMemo(() => {
-    const total = WEIGHTS.llm + WEIGHTS.stt + WEIGHTS.tts + WEIGHTS.vad;
+    // With Gemini nothing is downloaded for the brain.
+    const llm = cloud ? 0 : WEIGHTS.llm;
+    const total = llm + WEIGHTS.stt + WEIGHTS.tts + WEIGHTS.vad;
     return (
-      (brain.downloadProgress * WEIGHTS.llm +
+      (brain.downloadProgress * llm +
         stt.downloadProgress * WEIGHTS.stt +
         tts.downloadProgress * WEIGHTS.tts +
         vad.downloadProgress * WEIGHTS.vad) /
       total
     );
-  }, [brain.downloadProgress, stt.downloadProgress, tts.downloadProgress, vad.downloadProgress]);
+  }, [cloud, brain.downloadProgress, stt.downloadProgress, tts.downloadProgress, vad.downloadProgress]);
   const modelError = brain.error ?? stt.error ?? tts.error ?? vad.error;
 
   // ---- speaking ---------------------------------------------------------
@@ -119,7 +151,7 @@ export function useVoiceLoop(opts: { persona: PersonaId | undefined; enabled: bo
             await new Promise<void>((r) => (wake = r));
             continue;
           }
-          const style = persona?.voices[getMemory().voiceStyle] ?? PERSONAS.female.voices.warm;
+          const style = (persona ?? PERSONAS.female).voices[language][getMemory().voiceStyle];
           try {
             for await (const chunk of tts.synthesize!(sentence, { voice: style.voice, speed: style.speed })) {
               if (turnId.current !== id) return;
@@ -140,6 +172,7 @@ export function useVoiceLoop(opts: { persona: PersonaId | undefined; enabled: bo
           }
         }
         if (turnId.current === id) await player.waitUntilIdle();
+        if (firstAudio) micMutedUntil.current = Date.now() + ECHO_TAIL_MS;
         outLevel.set(0);
       })();
 
@@ -156,7 +189,7 @@ export function useVoiceLoop(opts: { persona: PersonaId | undefined; enabled: bo
         done: run,
       };
     },
-    [persona, player, tts.synthesize, outLevel, setLoopState],
+    [persona, language, player, tts.synthesize, outLevel, setLoopState],
   );
 
   // ---- one turn ---------------------------------------------------------
@@ -219,7 +252,7 @@ export function useVoiceLoop(opts: { persona: PersonaId | undefined; enabled: bo
     async (id: number, withPreroll: boolean): Promise<string | null> => {
       setLoopState('listening');
       vad.resetStream?.();
-      const gen = stt.stream!({ language: 'en', vadOptions: LISTEN_VAD });
+      const gen = stt.stream!({ language, vadOptions: LISTEN_VAD });
       // The first next() runs the generator up to its first wait, which opens
       // the stream; only then are inserts accepted.
       let step = gen.next();
@@ -248,7 +281,7 @@ export function useVoiceLoop(opts: { persona: PersonaId | undefined; enabled: bo
       }
       return turnId.current === id ? text : null;
     },
-    [setLoopState, stt.stream, stt.streamInsert, stt.streamStop, vad],
+    [language, setLoopState, stt.stream, stt.streamInsert, stt.streamStop, vad],
   );
 
   const runLoop = useCallback(
@@ -292,10 +325,10 @@ export function useVoiceLoop(opts: { persona: PersonaId | undefined; enabled: bo
       outLevel.set(player.level);
       const s = stateRef.current;
       if (s === 'listening') {
-        stt.streamInsert?.(frame);
+        if (Date.now() >= micMutedUntil.current) stt.streamInsert?.(frame);
         return;
       }
-      if (s !== 'thinking' && s !== 'speaking') return;
+      if (!VOICE_BARGE_IN || (s !== 'thinking' && s !== 'speaking')) return;
 
       preroll.current.push(frame);
       prerollLen.current += frame.length;
@@ -323,10 +356,11 @@ export function useVoiceLoop(opts: { persona: PersonaId | undefined; enabled: bo
     try {
       await mic.start();
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      // A short spoken hello, so the call feels answered.
-      setLoopState('speaking');
+      // A short spoken hello, so the call feels answered. The speaker flips to
+      // 'speaking' on first audio, so we stay on "Connecting…" until then.
       const speaker = createSpeaker(id, () => {});
-      speaker.push([GREETINGS[Math.floor(Math.random() * GREETINGS.length)]!]);
+      const greetings = (persona ?? PERSONAS.female).greetings[language](userName?.trim() || undefined);
+      speaker.push([greetings[Math.floor(Math.random() * greetings.length)]!]);
       speaker.finish();
       await speaker.done;
       player.release();
@@ -336,7 +370,7 @@ export function useVoiceLoop(opts: { persona: PersonaId | undefined; enabled: bo
       return;
     }
     if (turnId.current === id) void runLoop(id, false);
-  }, [createSpeaker, isReady, mic, player, runLoop, setLoopState]);
+  }, [createSpeaker, isReady, language, mic, persona, player, runLoop, setLoopState, userName]);
 
   const stop = useCallback(async () => {
     turnId.current++;

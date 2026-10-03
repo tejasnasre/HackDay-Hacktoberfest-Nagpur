@@ -3,22 +3,29 @@ import { Redirect, router } from 'expo-router';
 import { Alert, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { CompanionAvatar } from '@/components/CompanionAvatar';
 import { Orb } from '@/components/Orb';
 import { colors } from '@/constants/colors';
+import { APPROX_DOWNLOAD_GB, APPROX_VOICE_DOWNLOAD_GB } from '@/voice/modelConfig';
 import { PERSONAS } from '@/voice/persona';
-import type { LoopState } from '@/voice/useVoiceLoop';
+import { VOICE_BARGE_IN, type LoopState } from '@/voice/useVoiceLoop';
 import { useVoice } from '@/voice/VoiceProvider';
 
-const STATUS: Record<LoopState, (name: string) => string> = {
-  off: (n) => `Tap to call ${n}`,
-  starting: () => 'Connecting…',
-  listening: () => 'Listening',
-  thinking: () => 'Thinking',
-  speaking: (n) => `${n} is talking · speak to interrupt`,
+const CALL_SIZE = 76;
+
+const STATUS: Record<LoopState, { title: (name: string) => string; hint: string }> = {
+  off: { title: (n) => `Call ${n}`, hint: 'Tap the waves or the button to start' },
+  starting: { title: () => 'Connecting…', hint: 'One moment' },
+  listening: { title: () => 'Listening', hint: 'Just talk, pause when you’re done' },
+  thinking: { title: () => 'Thinking', hint: 'Tap to interrupt' },
+  speaking: {
+    title: (n) => `${n} is talking`,
+    hint: VOICE_BARGE_IN ? 'Speak anytime to interrupt' : 'Tap the waves to interrupt',
+  },
 };
 
 export default function Home() {
-  const { data, loop } = useVoice();
+  const { data, loop, geminiAvailable } = useVoice();
   const { width } = useWindowDimensions();
 
   if (!data) return <View style={styles.screen} />;
@@ -26,13 +33,22 @@ export default function Home() {
 
   const persona = PERSONAS[data.persona];
   const inCall = loop.state !== 'off';
-  const orbSize = Math.min(width - 32, 360);
+  // Wider than the screen: the strands fade out well before the canvas edges.
+  const orbSize = width * 1.2;
+  const gemini = data.engine === 'gemini';
+  const needsKey = gemini && !geminiAvailable;
+  const status = STATUS[loop.state];
 
   const confirmForget = () =>
     Alert.alert('Forget everything?', `${persona.name} will forget every note and mood saved on this phone.`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Forget', style: 'destructive', onPress: () => void loop.forget() },
     ]);
+
+  const openSettings = () => {
+    if (inCall) void loop.stop();
+    router.push('/settings');
+  };
 
   const switchCompanion = () => {
     if (inCall) void loop.stop();
@@ -42,13 +58,24 @@ export default function Home() {
   return (
     <SafeAreaView style={styles.screen}>
       <View style={styles.header}>
-        <Pressable onPress={switchCompanion} hitSlop={12} accessibilityLabel="Change companion">
-          <Text style={styles.name}>{persona.name}</Text>
-          <Text style={styles.sub}>on-device · private</Text>
+        <Pressable
+          onPress={switchCompanion}
+          hitSlop={8}
+          style={styles.who}
+          accessibilityLabel={`Change companion, now ${persona.name}`}>
+          <CompanionAvatar persona={data.persona} size={44} />
+          <View>
+            <Text style={styles.name}>{persona.name}</Text>
+            <View style={styles.pill}>
+              <Lucide name={gemini ? 'cloud' : 'shield-check'} size={12} color={colors.accent} />
+              <Text style={styles.pillText}>{gemini ? 'Gemini · your key' : 'On-device · private'}</Text>
+            </View>
+          </View>
         </Pressable>
-        <Pressable onPress={confirmForget} hitSlop={12} accessibilityLabel="Forget everything">
-          <Lucide name="trash-2" size={22} color={colors.textDim} />
-        </Pressable>
+        <View style={styles.headerActions}>
+          <IconButton icon="settings" label="Settings" onPress={openSettings} />
+          <IconButton icon="trash-2" label="Forget everything" onPress={confirmForget} />
+        </View>
       </View>
 
       <Pressable
@@ -56,22 +83,47 @@ export default function Home() {
         onPress={inCall ? loop.tap : loop.start}
         disabled={!loop.isReady}
         accessibilityLabel={inCall ? 'Interrupt or finish speaking' : `Call ${persona.name}`}>
-        <Orb size={orbSize} state={loop.state} micLevel={loop.micLevel} outLevel={loop.outLevel} />
+        <Orb size={orbSize} palette={persona.palette} state={loop.state} micLevel={loop.micLevel} outLevel={loop.outLevel} />
       </Pressable>
 
       <View style={styles.footer}>
-        {!loop.isReady ? (
-          <Loading progress={loop.downloadProgress} error={loop.modelError?.message} />
+        {needsKey ? (
+          <>
+            <View style={{ alignItems: 'center', gap: 6 }}>
+              <Text style={styles.status}>Add your Gemini key</Text>
+              <Text style={styles.hint}>Or switch back to on-device in settings</Text>
+            </View>
+            <Pressable onPress={openSettings} style={({ pressed }) => [styles.keyBtn, pressed && styles.pressed]}>
+              <Lucide name="key-round" size={18} color={colors.accentInk} />
+              <Text style={styles.keyBtnText}>Add key</Text>
+            </Pressable>
+          </>
+        ) : !loop.isReady ? (
+          <Loading progress={loop.downloadProgress} error={loop.modelError?.message} gemini={gemini} />
         ) : (
           <>
-            <Text style={styles.status}>{STATUS[loop.state](persona.name)}</Text>
+            <View style={{ alignItems: 'center', gap: 6 }}>
+              <Text style={styles.status}>{status.title(persona.name)}</Text>
+              <Text style={styles.hint}>{status.hint}</Text>
+            </View>
             {loop.loopError && <Text style={styles.error}>{loop.loopError}</Text>}
-            <Pressable
-              onPress={inCall ? loop.stop : loop.start}
-              style={({ pressed }) => [styles.callBtn, inCall && styles.hangUp, pressed && { opacity: 0.85 }]}
-              accessibilityLabel={inCall ? 'End call' : 'Start call'}>
-              <Lucide name={inCall ? 'phone-off' : 'phone'} size={28} color={inCall ? colors.text : colors.accentInk} />
-            </Pressable>
+            <View style={{ alignItems: 'center', gap: 8 }}>
+              <Pressable
+                onPress={inCall ? loop.stop : loop.start}
+                style={({ pressed }) => pressed && styles.pressed}
+                accessibilityLabel={inCall ? 'End call' : 'Start call'}>
+                {inCall ? (
+                  <View style={styles.hangUp}>
+                    <Lucide name="phone-off" size={28} color={colors.accentInk} />
+                  </View>
+                ) : (
+                  <CompanionAvatar persona={data.persona} size={CALL_SIZE}>
+                    <Lucide name="phone" size={28} color="#FFFFFF" />
+                  </CompanionAvatar>
+                )}
+              </Pressable>
+              <Text style={styles.callLabel}>{inCall ? 'End' : 'Call'}</Text>
+            </View>
             {__DEV__ && loop.lastStats && (
               <Text style={styles.stats}>
                 first token {loop.lastStats.firstTokenMs} ms · first audio {loop.lastStats.firstAudioMs} ms
@@ -84,18 +136,42 @@ export default function Home() {
   );
 }
 
-function Loading({ progress, error }: { progress: number; error?: string }) {
-  if (error) return <Text style={styles.error}>Couldn’t load Hum’s models: {error}</Text>;
+function IconButton({ icon, label, onPress }: { icon: 'settings' | 'trash-2'; label: string; onPress: () => void }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={6}
+      accessibilityLabel={label}
+      style={({ pressed }) => [styles.iconBtn, pressed && { backgroundColor: colors.surfaceHi }]}>
+      <Lucide name={icon} size={20} color={colors.textDim} />
+    </Pressable>
+  );
+}
+
+function Loading({ progress, error, gemini }: { progress: number; error?: string; gemini: boolean }) {
+  if (error) {
+    return (
+      <View style={styles.card}>
+        <Lucide name="triangle-alert" size={20} color={colors.danger} />
+        <Text style={[styles.error, { flex: 1, textAlign: 'left' }]}>Couldn’t load Hum’s models: {error}</Text>
+      </View>
+    );
+  }
   const downloading = progress < 100;
   return (
-    <View style={{ width: '100%', alignItems: 'center', gap: 12 }}>
-      <Text style={styles.status}>
-        {downloading ? `Downloading voice models · ${Math.floor(progress)}%` : 'Waking up…'}
-      </Text>
+    <View style={[styles.card, { flexDirection: 'column', alignItems: 'stretch', gap: 12 }]}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+        <Text style={styles.cardTitle}>{downloading ? 'Downloading voice models' : 'Waking up…'}</Text>
+        {downloading && <Text style={styles.percent}>{Math.floor(progress)}%</Text>}
+      </View>
       <View style={styles.track}>
         <View style={[styles.fill, { width: `${Math.max(2, progress)}%` }]} />
       </View>
-      {downloading && <Text style={styles.sub}>About 3 GB, one time only. Keep Hum open on Wi-Fi.</Text>}
+      {downloading && (
+        <Text style={styles.hint}>
+          About {gemini ? APPROX_VOICE_DOWNLOAD_GB : APPROX_DOWNLOAD_GB} GB, one time only. Keep Hum open on Wi-Fi.
+        </Text>
+      )}
     </View>
   );
 }
@@ -106,25 +182,63 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 24,
-    paddingTop: 12,
+    paddingHorizontal: 20,
+    paddingTop: 8,
   },
-  name: { color: colors.text, fontSize: 24, fontWeight: '700' },
-  sub: { color: colors.textDim, fontSize: 13, marginTop: 2, textAlign: 'center' },
+  who: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  name: { color: colors.text, fontSize: 22, fontWeight: '700' },
+  pill: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 2 },
+  pillText: { color: colors.textDim, fontSize: 13 },
+  headerActions: { flexDirection: 'row', gap: 10 },
+  iconBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
   orbWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  footer: { alignItems: 'center', paddingHorizontal: 24, paddingBottom: 32, gap: 18, minHeight: 170 },
-  status: { color: colors.text, fontSize: 17, fontWeight: '500', textAlign: 'center' },
-  error: { color: colors.danger, fontSize: 14, textAlign: 'center' },
-  callBtn: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
+  footer: { alignItems: 'center', paddingHorizontal: 20, paddingBottom: 28, gap: 20, minHeight: 200 },
+  status: { color: colors.text, fontSize: 22, fontWeight: '600', textAlign: 'center' },
+  hint: { color: colors.textDim, fontSize: 14, lineHeight: 20, textAlign: 'center' },
+  error: { color: colors.danger, fontSize: 14, lineHeight: 20, textAlign: 'center' },
+  pressed: { opacity: 0.85, transform: [{ scale: 0.97 }] },
+  hangUp: {
+    width: CALL_SIZE,
+    height: CALL_SIZE,
+    borderRadius: CALL_SIZE / 2,
     backgroundColor: colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  hangUp: { backgroundColor: '#E5484D' },
+  callLabel: { color: colors.textDim, fontSize: 13, fontWeight: '600' },
+  keyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: colors.accent,
+    borderRadius: 999,
+    paddingHorizontal: 28,
+    paddingVertical: 16,
+  },
+  keyBtnText: { color: colors.accentInk, fontSize: 16, fontWeight: '700' },
   stats: { color: colors.textDim, fontSize: 12 },
+  card: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 18,
+    borderRadius: 20,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  cardTitle: { color: colors.text, fontSize: 16, fontWeight: '600' },
+  percent: { color: colors.accent, fontSize: 16, fontWeight: '700', fontVariant: ['tabular-nums'] },
   track: { width: '100%', height: 6, borderRadius: 3, backgroundColor: colors.surfaceHi, overflow: 'hidden' },
   fill: { height: '100%', backgroundColor: colors.accent },
 });

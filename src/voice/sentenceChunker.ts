@@ -7,12 +7,16 @@ const HIDDEN_BLOCKS: [open: string, close: string][] = [
   ['<|channel>', '<channel|>'],
 ];
 
-const SENTENCE_END = /[.!?…]+["')\]]*\s/;
+// '।' and '॥' end sentences in Devanagari.
+const SENTENCE_END = /[.!?…।॥]+["')\]]*\s/;
 const ABBREVIATIONS = /\b(mr|mrs|ms|dr|st|vs|etc|e\.g|i\.e)\.\s$/i;
 // Below this, a sentence is merged with the next to avoid choppy TTS.
 const MIN_SENTENCE_CHARS = 12;
 // A long clause without punctuation is flushed at a comma to keep latency low.
 const MAX_CLAUSE_CHARS = 140;
+// TTS time grows with text length, so the first chunk breaks at a comma much
+// sooner: the user hears a reply while the rest is still being synthesized.
+const FIRST_CLAUSE_CHARS = 40;
 
 function cleanForSpeech(text: string): string {
   return stripSpecialTokens(text)
@@ -29,6 +33,7 @@ function cleanForSpeech(text: string): string {
 export function createSentenceChunker() {
   let raw = '';
   let pending = '';
+  let emitted = 0;
 
   const drainRaw = () => {
     // Drop complete hidden blocks; hold back anything after an unclosed opener.
@@ -74,8 +79,9 @@ export function createSentenceChunker() {
         const end = match.index + match[0].length;
         if (!ABBREVIATIONS.test(pending.slice(0, end))) cut = end;
       }
-      if (cut === -1 && pending.length > MAX_CLAUSE_CHARS) {
-        const comma = pending.lastIndexOf(', ', MAX_CLAUSE_CHARS);
+      const maxClause = emitted === 0 ? FIRST_CLAUSE_CHARS : MAX_CLAUSE_CHARS;
+      if (cut === -1 && pending.length > maxClause) {
+        const comma = pending.lastIndexOf(', ', maxClause);
         if (comma > MIN_SENTENCE_CHARS) cut = comma + 2;
       }
       if (cut === -1) break;
@@ -88,6 +94,7 @@ export function createSentenceChunker() {
       }
       sentences.push(pending.slice(0, cut).trim());
       pending = pending.slice(cut);
+      emitted++;
     }
     if (final) {
       const rest = pending.trim();
@@ -113,6 +120,7 @@ export function createSentenceChunker() {
     reset() {
       raw = '';
       pending = '';
+      emitted = 0;
     },
   };
 }

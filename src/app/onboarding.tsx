@@ -5,19 +5,24 @@ import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { BrainPicker } from '@/components/BrainPicker';
+import { CompanionAvatar } from '@/components/CompanionAvatar';
+import { ProfileFields } from '@/components/ProfileFields';
 import { colors } from '@/constants/colors';
-import { APPROX_DOWNLOAD_GB } from '@/voice/modelConfig';
+import { APPROX_DOWNLOAD_GB, APPROX_VOICE_DOWNLOAD_GB } from '@/voice/modelConfig';
 import { PERSONAS, type PersonaId } from '@/voice/persona';
 import { ensureMicPermission } from '@/voice/useMic';
 import { useVoice } from '@/voice/VoiceProvider';
 
 export default function Onboarding() {
-  const { data, choosePersona, acceptModels, setRememberEnabled } = useVoice();
+  const { data, geminiAvailable, choosePersona, acceptModels, setRememberEnabled } = useVoice();
   const params = useLocalSearchParams<{ step?: string }>();
   const [step, setStep] = useState<'persona' | 'privacy'>(
     params.step === 'persona' || !data?.persona ? 'persona' : 'privacy',
   );
   const [micDenied, setMicDenied] = useState(false);
+  const gemini = data?.engine === 'gemini';
+  const canBegin = !gemini || geminiAvailable;
 
   const pick = async (id: PersonaId) => {
     void Haptics.selectionAsync();
@@ -48,9 +53,7 @@ export default function Onboarding() {
               onPress={() => pick(id)}
               style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
               accessibilityRole="button">
-              <View style={[styles.avatar, { backgroundColor: id === 'female' ? '#B04A86' : '#4B3BB8' }]}>
-                <Text style={styles.avatarText}>{PERSONAS[id].name[0]}</Text>
-              </View>
+              <CompanionAvatar persona={id} size={52} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.cardTitle}>{PERSONAS[id].name}</Text>
                 <Text style={styles.cardBody}>{PERSONAS[id].tagline}</Text>
@@ -65,20 +68,31 @@ export default function Onboarding() {
 
   return (
     <SafeAreaView style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Pressable onPress={() => setStep('persona')} hitSlop={12} style={styles.back}>
           <Lucide name="chevron-left" size={22} color={colors.textDim} />
         </Pressable>
-        <Text style={styles.title}>Everything stays on your phone</Text>
+        <Text style={styles.title}>About you</Text>
+        <ProfileFields />
+
+        <Text style={[styles.title, { marginTop: 12 }]}>
+          {gemini ? 'Your key, your conversations' : 'Everything stays on your phone'}
+        </Text>
+
+        <BrainPicker />
 
         <Row
           icon="shield-check"
-          text="Hum’s voice, ears and brain run fully on this device. Nothing you say is sent anywhere."
+          text={
+            gemini
+              ? 'Hum hears and speaks on this device. Only the text of what you say goes to Gemini, on your own API key.'
+              : 'Hum’s voice, ears and brain run fully on this device. Nothing you say is sent anywhere.'
+          }
         />
         <Row icon="mic-off" text="Your voice is never recorded or saved." />
         <Row
           icon="download"
-          text={`First, Hum downloads about ${APPROX_DOWNLOAD_GB} GB of AI models. Use Wi-Fi, and keep the app open.`}
+          text={`First, Hum downloads about ${gemini ? APPROX_VOICE_DOWNLOAD_GB : APPROX_DOWNLOAD_GB} GB of AI models. Use Wi-Fi, and keep the app open.`}
         />
 
         <View style={styles.toggleRow}>
@@ -99,7 +113,10 @@ export default function Onboarding() {
           <Text style={styles.error}>Hum needs the microphone to hear you. Enable it in Settings, then try again.</Text>
         )}
 
-        <Pressable onPress={begin} style={({ pressed }) => [styles.cta, pressed && { opacity: 0.85 }]}>
+        <Pressable
+          onPress={begin}
+          disabled={!canBegin}
+          style={({ pressed }) => [styles.cta, (pressed || !canBegin) && { opacity: canBegin ? 0.85 : 0.4 }]}>
           <Text style={styles.ctaText}>Download and allow mic</Text>
         </Pressable>
       </ScrollView>
@@ -134,8 +151,6 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   cardPressed: { backgroundColor: colors.surfaceHi },
-  avatar: { width: 52, height: 52, borderRadius: 26, alignItems: 'center', justifyContent: 'center' },
-  avatarText: { color: colors.text, fontSize: 22, fontWeight: '700' },
   cardTitle: { color: colors.text, fontSize: 18, fontWeight: '600', marginBottom: 2 },
   cardBody: { color: colors.textDim, fontSize: 14, lineHeight: 20 },
   row: { flexDirection: 'row', gap: 14, alignItems: 'flex-start', paddingVertical: 4 },
