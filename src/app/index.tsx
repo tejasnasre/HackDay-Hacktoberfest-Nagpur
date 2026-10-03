@@ -5,6 +5,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { CompanionAvatar } from '@/components/CompanionAvatar';
 import { Orb } from '@/components/Orb';
+import { CircularStatusBarIphoneDuo } from '@/shared/components/circular-status-bar-iphone-duo';
+import { GradientAvatar } from '@/shared/components/gradient-avatar';
 import { colors } from '@/constants/colors';
 import { APPROX_DOWNLOAD_GB, APPROX_VOICE_DOWNLOAD_GB } from '@/voice/modelConfig';
 import { PERSONAS } from '@/voice/persona';
@@ -12,6 +14,11 @@ import { VOICE_BARGE_IN, type LoopState } from '@/voice/useVoiceLoop';
 import { useVoice } from '@/voice/VoiceProvider';
 
 const CALL_SIZE = 76;
+// The end-call button's gradient: the only red in the app.
+const END_CALL_REDS = ['#FF3B30', '#B3001B', '#FF6A55', '#7A0010'];
+// The waking-up animation is 600x380, with its ring centred; the icon sits inside the ring.
+const WAKE_WIDTH = 150;
+const WAKE_HEIGHT = (WAKE_WIDTH * 380) / 600;
 
 const STATUS: Record<LoopState, { title: (name: string) => string; hint: string }> = {
   off: { title: (n) => `Call ${n}`, hint: 'Tap the waves or the button to start' },
@@ -34,7 +41,7 @@ export default function Home() {
   const persona = PERSONAS[data.persona];
   const inCall = loop.state !== 'off';
   // Wider than the screen: the strands fade out well before the canvas edges.
-  const orbSize = width * 1.2;
+  const orbSize = width * 1.45;
   const gemini = data.engine === 'gemini';
   const needsKey = gemini && !geminiAvailable;
   const status = STATUS[loop.state];
@@ -114,7 +121,10 @@ export default function Home() {
                 accessibilityLabel={inCall ? 'End call' : 'Start call'}>
                 {inCall ? (
                   <View style={styles.hangUp}>
-                    <Lucide name="phone-off" size={28} color={colors.accentInk} />
+                    <GradientAvatar token="end-call" size={CALL_SIZE} palette={END_CALL_REDS} />
+                    <View style={[StyleSheet.absoluteFill, styles.center]}>
+                      <Lucide name="phone-off" size={28} color="#FFFFFF" />
+                    </View>
                   </View>
                 ) : (
                   <CompanionAvatar persona={data.persona} size={CALL_SIZE}>
@@ -124,11 +134,6 @@ export default function Home() {
               </Pressable>
               <Text style={styles.callLabel}>{inCall ? 'End' : 'Call'}</Text>
             </View>
-            {__DEV__ && loop.lastStats && (
-              <Text style={styles.stats}>
-                first token {loop.lastStats.firstTokenMs} ms · first audio {loop.lastStats.firstAudioMs} ms
-              </Text>
-            )}
           </>
         )}
       </View>
@@ -158,20 +163,31 @@ function Loading({ progress, error, gemini }: { progress: number; error?: string
     );
   }
   const downloading = progress < 100;
+  if (!downloading) {
+    return (
+      <View style={[styles.card, { flexDirection: 'column', gap: 4 }]}>
+        <View style={{ width: WAKE_WIDTH, height: WAKE_HEIGHT }}>
+          <CircularStatusBarIphoneDuo size={WAKE_WIDTH} color={colors.accent} showWifi={false} accessibilityLabel="Waking up" />
+          <View style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center' }]} pointerEvents="none">
+            <Lucide name="sparkles" size={22} color={colors.accent} />
+          </View>
+        </View>
+        <Text style={styles.cardTitle}>Waking up…</Text>
+      </View>
+    );
+  }
   return (
     <View style={[styles.card, { flexDirection: 'column', alignItems: 'stretch', gap: 12 }]}>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-        <Text style={styles.cardTitle}>{downloading ? 'Downloading voice models' : 'Waking up…'}</Text>
-        {downloading && <Text style={styles.percent}>{Math.floor(progress)}%</Text>}
+        <Text style={styles.cardTitle}>Downloading voice models</Text>
+        <Text style={styles.percent}>{Math.floor(progress)}%</Text>
       </View>
       <View style={styles.track}>
         <View style={[styles.fill, { width: `${Math.max(2, progress)}%` }]} />
       </View>
-      {downloading && (
-        <Text style={styles.hint}>
-          About {gemini ? APPROX_VOICE_DOWNLOAD_GB : APPROX_DOWNLOAD_GB} GB, one time only. Keep Hum open on Wi-Fi.
-        </Text>
-      )}
+      <Text style={styles.hint}>
+        About {gemini ? APPROX_VOICE_DOWNLOAD_GB : APPROX_DOWNLOAD_GB} GB, one time only. Keep Hum open on Wi-Fi.
+      </Text>
     </View>
   );
 }
@@ -206,14 +222,8 @@ const styles = StyleSheet.create({
   hint: { color: colors.textDim, fontSize: 14, lineHeight: 20, textAlign: 'center' },
   error: { color: colors.danger, fontSize: 14, lineHeight: 20, textAlign: 'center' },
   pressed: { opacity: 0.85, transform: [{ scale: 0.97 }] },
-  hangUp: {
-    width: CALL_SIZE,
-    height: CALL_SIZE,
-    borderRadius: CALL_SIZE / 2,
-    backgroundColor: colors.accent,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  hangUp: { width: CALL_SIZE, height: CALL_SIZE },
+  center: { alignItems: 'center', justifyContent: 'center' },
   callLabel: { color: colors.textDim, fontSize: 13, fontWeight: '600' },
   keyBtn: {
     flexDirection: 'row',
@@ -225,7 +235,6 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
   },
   keyBtnText: { color: colors.accentInk, fontSize: 16, fontWeight: '700' },
-  stats: { color: colors.textDim, fontSize: 12 },
   card: {
     width: '100%',
     flexDirection: 'row',
